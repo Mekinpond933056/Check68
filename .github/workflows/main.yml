@@ -1,0 +1,1562 @@
+import React, { useState, useEffect, createContext, useContext } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+// import * as XLSX from 'xlsx'; // Removed this import as XLSX will be loaded via CDN
+
+// Context for Firebase and User
+const FirebaseContext = createContext(null);
+
+// Custom Hook to provide Firebase services and user state
+const useFirebase = () => {
+  const [app, setApp] = useState(null);
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    try {
+      // Initialize Firebase app
+      const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+      const initializedApp = initializeApp(firebaseConfig);
+      setApp(initializedApp);
+
+      // Get Firestore and Auth instances
+      const firestoreDb = getFirestore(initializedApp);
+      setDb(firestoreDb);
+      const firebaseAuth = getAuth(initializedApp);
+      setAuth(firebaseAuth);
+
+      // Sign in with custom token or anonymously
+      const signInUser = async () => {
+        try {
+          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await signInWithCustomToken(firebaseAuth, __initial_auth_token);
+            console.log("Signed in with custom token.");
+          } else {
+            await signInAnonymously(firebaseAuth);
+            console.log("Signed in anonymously.");
+          }
+        } catch (e) {
+          console.error("Error signing in:", e);
+          setError("เกิดข้อผิดพลาดในการเข้าสู่ระบบ: " + e.message);
+        }
+      };
+      signInUser();
+
+      // Listen for auth state changes
+      const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
+        if (user) {
+          setUserId(user.uid);
+          console.log("User ID:", user.uid);
+        } else {
+          setUserId(null);
+          console.log("No user signed in.");
+        }
+        setIsAuthReady(true); // Auth state is ready
+      });
+
+      return () => unsubscribe(); // Cleanup auth listener
+    } catch (e) {
+      console.error("Error initializing Firebase:", e);
+      setError("เกิดข้อผิดพลาดในการเริ่มต้น Firebase: " + e.message);
+    }
+  }, []);
+
+  return { app, db, auth, userId, isAuthReady, error };
+};
+
+// Main App Component
+const App = () => {
+  const { db, auth, userId, isAuthReady, error } = useFirebase();
+  const [currentPage, setCurrentPage] = useState('login'); // 'login', 'dashboard', 'classManagement', 'studentManagement', 'attendance', 'dailySummary', 'termSummary'
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [showModal, setShowModal] = useState(false);
+  const [modalContent, setModalContent] = useState('');
+  const [modalAction, setModalAction] = useState(null);
+
+  // Hardcoded login credentials for Mekinpond
+  const MEKINPOND_USERNAME = "Mekinpond";
+  const MEKINPOND_PASSWORD = "933056";
+
+  useEffect(() => {
+    if (isAuthReady && userId) {
+      // If auth is ready and a user is logged in (either custom token or anonymous),
+      // we can proceed to dashboard. For this specific app, we still need to check
+      // the hardcoded credentials for "Mekinpond".
+      // For simplicity, if userId exists, we assume logged in for now,
+      // but a real app would use Firebase email/password auth for Mekinpond.
+      // Since the prompt specifies a custom token, we'll rely on that for initial auth.
+      // If the token is not provided, we sign in anonymously and then the login form
+      // will act as a gate.
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+         setLoggedIn(true);
+         setCurrentPage('dashboard');
+      } else {
+         // If no custom token, user must log in via the form
+         setCurrentPage('login');
+      }
+    } else if (isAuthReady && !userId) {
+      setCurrentPage('login');
+    }
+  }, [isAuthReady, userId]);
+
+  const handleLogin = async (username, password) => {
+    if (username === MEKINPOND_USERNAME && password === MEKINPOND_PASSWORD) {
+      // In a real app, you'd use Firebase email/password auth here.
+      // For this simulation, we just set loggedIn to true.
+      setLoggedIn(true);
+      setCurrentPage('dashboard');
+      showTemporaryMessage("เข้าสู่ระบบสำเร็จ!");
+    } else {
+      showTemporaryMessage("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง", true);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (auth) {
+      try {
+        await signOut(auth);
+        setLoggedIn(false);
+        setUserId(null); // Clear userId on logout
+        setCurrentPage('login');
+        showTemporaryMessage("ออกจากระบบสำเร็จ!");
+      } catch (e) {
+        console.error("Error signing out:", e);
+        showTemporaryMessage("เกิดข้อผิดพลาดในการออกจากระบบ: " + e.message, true);
+      }
+    }
+  };
+
+  const showTemporaryMessage = (message, isError = false) => {
+    setSuccessMessage(message);
+    setShowSuccessMessage(true);
+    setTimeout(() => {
+      setShowSuccessMessage(false);
+      setSuccessMessage('');
+    }, 3000); // Message disappears after 3 seconds
+    if (isError) {
+      console.error(message);
+    }
+  };
+
+  const showConfirmationModal = (content, action) => {
+    setModalContent(content);
+    setModalAction(() => action); // Use a function to set the action
+    setShowModal(true);
+  };
+
+  const handleModalConfirm = () => {
+    if (modalAction) {
+      modalAction();
+    }
+    setShowModal(false);
+    setModalAction(null);
+    setModalContent('');
+  };
+
+  const handleModalCancel = () => {
+    setShowModal(false);
+    setModalAction(null);
+    setModalContent('');
+  };
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-red-100 text-red-700 p-4">
+        <div className="text-center">
+          <p className="text-lg font-semibold">เกิดข้อผิดพลาดร้ายแรง:</p>
+          <p>{error}</p>
+          <p>โปรดลองโหลดหน้าใหม่ หรือติดต่อผู้ดูแลระบบ</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthReady) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-100 to-yellow-100">
+        <div className="text-xl font-semibold text-blue-700 animate-pulse">กำลังโหลดระบบ...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-100 to-yellow-100 font-inter text-gray-800 flex flex-col">
+      {showSuccessMessage && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in-down">
+          {successMessage}
+        </div>
+      )}
+
+      {showModal && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-8 rounded-lg shadow-xl max-w-sm w-full text-center">
+            <p className="text-lg font-semibold mb-6">{modalContent}</p>
+            <div className="flex justify-center space-x-4">
+              <button
+                onClick={handleModalConfirm}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition duration-300 shadow-md"
+              >
+                ยืนยัน
+              </button>
+              <button
+                onClick={handleModalCancel}
+                className="px-6 py-2 bg-gray-300 text-gray-800 rounded-lg hover:bg-gray-400 transition duration-300 shadow-md"
+              >
+                ยกเลิก
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loggedIn && (
+        <nav className="bg-blue-700 text-white p-4 shadow-md flex flex-wrap justify-between items-center sticky top-0 z-40">
+          <h1 className="text-2xl font-bold mb-2 md:mb-0">ระบบเช็คชื่อนักเรียน</h1>
+          <div className="flex flex-wrap gap-2 md:gap-4">
+            <button onClick={() => setCurrentPage('dashboard')} className="nav-button">หน้าหลัก</button>
+            <button onClick={() => setCurrentPage('classManagement')} className="nav-button">จัดการห้องเรียน</button>
+            <button onClick={() => setCurrentPage('studentManagement')} className="nav-button">จัดการนักเรียน</button>
+            <button onClick={() => setCurrentPage('attendance')} className="nav-button">เช็คชื่อ</button>
+            <button onClick={() => setCurrentPage('dailySummary')} className="nav-button">สรุปรายวัน</button>
+            <button onClick={() => setCurrentPage('termSummary')} className="nav-button">สรุปปลายเทอม</button>
+            <button onClick={handleLogout} className="nav-button bg-red-500 hover:bg-red-600">ออกจากระบบ</button>
+          </div>
+        </nav>
+      )}
+
+      <main className="flex-grow p-4 md:p-8">
+        {!loggedIn && <Login onLogin={handleLogin} />}
+        {loggedIn && currentPage === 'dashboard' && <Dashboard userId={userId} />}
+        {loggedIn && currentPage === 'classManagement' && <ClassManagement db={db} userId={userId} showTemporaryMessage={showTemporaryMessage} showConfirmationModal={showConfirmationModal} />}
+        {loggedIn && currentPage === 'studentManagement' && <StudentManagement db={db} userId={userId} showTemporaryMessage={showTemporaryMessage} showConfirmationModal={showConfirmationModal} />}
+        {loggedIn && currentPage === 'attendance' && <Attendance db={db} userId={userId} showTemporaryMessage={showTemporaryMessage} showConfirmationModal={showConfirmationModal} />}
+        {loggedIn && currentPage === 'dailySummary' && <DailySummary db={db} userId={userId} showTemporaryMessage={showTemporaryMessage} />}
+        {loggedIn && currentPage === 'termSummary' && <TermSummary db={db} userId={userId} showTemporaryMessage={showTemporaryMessage} />}
+      </main>
+    </div>
+  );
+};
+
+// Login Component
+const Login = ({ onLogin }) => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onLogin(username, password);
+  };
+
+  return (
+    <div className="flex items-center justify-center min-h-[calc(100vh-8rem)]"> {/* Adjusted height for nav */}
+      <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md border-t-4 border-blue-500">
+        <h2 className="text-3xl font-bold text-center text-blue-700 mb-8">เข้าสู่ระบบ</h2>
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div>
+            <label className="block text-gray-700 text-sm font-semibold mb-2" htmlFor="username">
+              ชื่อผู้ใช้
+            </label>
+            <input
+              type="text"
+              id="username"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-200"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-gray-700 text-sm font-semibold mb-2" htmlFor="password">
+              รหัสผ่าน
+            </label>
+            <input
+              type="password"
+              id="password"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-200"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </div>
+          <button
+            type="submit"
+            className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold text-lg hover:bg-blue-700 transition duration-300 shadow-lg transform hover:scale-105"
+          >
+            เข้าสู่ระบบ
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// Dashboard Component
+const Dashboard = ({ userId }) => {
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  return (
+    <div className="bg-white p-8 rounded-xl shadow-xl max-w-4xl mx-auto text-center border-t-4 border-blue-500">
+      <h2 className="text-3xl font-bold text-blue-700 mb-6">ยินดีต้อนรับ ครูเมฆินทร์ คำสูง</h2>
+      <p className="text-lg text-gray-700 mb-4">
+        นี่คือระบบเช็คชื่อนักเรียนออนไลน์สำหรับชั้นมัธยมศึกษาปีที่ 4 โรงเรียนดรุณราษฎร์วิทยา
+      </p>
+      <p className="text-md text-gray-600 mb-8">
+        คุณสามารถใช้เมนูด้านบนเพื่อจัดการห้องเรียน, นักเรียน, เช็คชื่อ และดูรายงานสรุปผลการมาเรียน
+      </p>
+      <div className="bg-yellow-50 p-4 rounded-lg border border-yellow-200 text-yellow-800 text-sm">
+        <p>
+          <span className="font-semibold">App ID:</span> {appId}
+        </p>
+        <p>
+          <span className="font-semibold">User ID:</span> {userId}
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// Class Management Component
+const ClassManagement = ({ db, userId, showTemporaryMessage, showConfirmationModal }) => {
+  const [classes, setClasses] = useState([]);
+  const [newClassName, setNewClassName] = useState('');
+  const [newClassGrade, setNewClassGrade] = useState(''); // e.g., ม.3, ม.4, ม.5
+  const [newClassGroup, setNewClassGroup] = useState(''); // e.g., ม.4/1-ม.4/3
+
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  const classesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/classes`);
+
+  useEffect(() => {
+    if (!db || !userId) return;
+
+    const q = query(classesCollectionRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const classesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setClasses(classesData.sort((a, b) => a.name.localeCompare(b.name))); // Sort alphabetically
+    }, (error) => {
+      console.error("Error fetching classes:", error);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลห้องเรียน: " + error.message, true);
+    });
+
+    return () => unsubscribe();
+  }, [db, userId]);
+
+  const handleAddClass = async (e) => {
+    e.preventDefault();
+    if (!newClassName.trim()) {
+      showTemporaryMessage("โปรดระบุชื่อห้องเรียน", true);
+      return;
+    }
+    if (!newClassGrade.trim()) {
+      showTemporaryMessage("โปรดระบุระดับชั้น (เช่น ม.4)", true);
+      return;
+    }
+
+    try {
+      await addDoc(classesCollectionRef, {
+        name: newClassName.trim(),
+        grade: newClassGrade.trim(),
+        group: newClassGroup.trim(),
+        createdAt: new Date(),
+      });
+      setNewClassName('');
+      setNewClassGrade('');
+      setNewClassGroup('');
+      showTemporaryMessage("เพิ่มห้องเรียนเรียบร้อย");
+    } catch (e) {
+      console.error("Error adding class:", e);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการเพิ่มห้องเรียน: " + e.message, true);
+    }
+  };
+
+  const handleDeleteClass = (classId, className) => {
+    showConfirmationModal(`คุณต้องการลบห้องเรียน "${className}" ใช่หรือไม่?`, async () => {
+      try {
+        await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/classes`, classId));
+        showTemporaryMessage("ลบห้องเรียนเรียบร้อย");
+      } catch (e) {
+        console.error("Error deleting class:", e);
+        showTemporaryMessage("เกิดข้อผิดพลาดในการลบห้องเรียน: " + e.message, true);
+      }
+    });
+  };
+
+  return (
+    <div className="bg-white p-6 rounded-xl shadow-xl max-w-4xl mx-auto border-t-4 border-blue-500">
+      <h2 className="text-3xl font-bold text-blue-700 mb-6 text-center">จัดการห้องเรียน</h2>
+
+      <form onSubmit={handleAddClass} className="mb-8 p-4 bg-blue-50 rounded-lg shadow-inner">
+        <h3 className="text-xl font-semibold text-blue-800 mb-4">เพิ่มห้องเรียนใหม่</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div>
+            <label htmlFor="newClassName" className="block text-gray-700 text-sm font-semibold mb-2">ชื่อห้องเรียน (เช่น ม.4/1)</label>
+            <input
+              type="text"
+              id="newClassName"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500"
+              value={newClassName}
+              onChange={(e) => setNewClassName(e.target.value)}
+              placeholder="เช่น ม.4/1"
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="newClassGrade" className="block text-gray-700 text-sm font-semibold mb-2">ระดับชั้น (เช่น ม.4)</label>
+            <input
+              type="text"
+              id="newClassGrade"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500"
+              value={newClassGrade}
+              onChange={(e) => setNewClassGrade(e.target.value)}
+              placeholder="เช่น ม.4"
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="newClassGroup" className="block text-gray-700 text-sm font-semibold mb-2">กลุ่มห้อง (ไม่บังคับ, เช่น ม.4/1-ม.4/3)</label>
+            <input
+              type="text"
+              id="newClassGroup"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500"
+              value={newClassGroup}
+              onChange={(e) => setNewClassGroup(e.target.value)}
+              placeholder="เช่น ม.4/1-ม.4/3"
+            />
+          </div>
+        </div>
+        <button
+          type="submit"
+          className="w-full bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700 transition duration-300 shadow-md"
+        >
+          เพิ่มห้องเรียน
+        </button>
+      </form>
+
+      <h3 className="text-xl font-semibold text-blue-800 mb-4">รายการห้องเรียน</h3>
+      {classes.length === 0 ? (
+        <p className="text-gray-600 text-center py-4">ยังไม่มีห้องเรียน กรุณาเพิ่มห้องเรียน</p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
+          <table className="min-w-full bg-white">
+            <thead className="bg-blue-100 border-b border-blue-200">
+              <tr>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">ชื่อห้อง</th>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">ระดับชั้น</th>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">กลุ่มห้อง</th>
+                <th className="py-3 px-4 text-center text-sm font-semibold text-blue-700 uppercase tracking-wider">การดำเนินการ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {classes.map((cls) => (
+                <tr key={cls.id} className="border-b border-gray-100 hover:bg-yellow-50">
+                  <td className="py-3 px-4 text-gray-800">{cls.name}</td>
+                  <td className="py-3 px-4 text-gray-800">{cls.grade}</td>
+                  <td className="py-3 px-4 text-gray-800">{cls.group || '-'}</td>
+                  <td className="py-3 px-4 text-center">
+                    <button
+                      onClick={() => handleDeleteClass(cls.id, cls.name)}
+                      className="bg-red-500 text-white px-3 py-1 rounded-lg text-sm hover:bg-red-600 transition duration-300 shadow-sm"
+                    >
+                      ลบ
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Student Management Component
+const StudentManagement = ({ db, userId, showTemporaryMessage, showConfirmationModal }) => {
+  const [students, setStudents] = useState([]);
+  const [classes, setClasses] = useState([]);
+  const [selectedClassId, setSelectedClassId] = useState('');
+  const [newStudent, setNewStudent] = useState({
+    studentId: '', // เลขประจำตัว
+    studentNumber: '', // เลขที่นักเรียน (NEW)
+    name: '',
+    notes: '',
+    photoUrl: '',
+    classId: '',
+  });
+
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  const studentsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/students`);
+  const classesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/classes`);
+
+  // Fetch classes
+  useEffect(() => {
+    if (!db || !userId) return;
+    const q = query(classesCollectionRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const classesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setClasses(classesData.sort((a, b) => a.name.localeCompare(b.name)));
+      if (classesData.length > 0 && !selectedClassId) {
+        setSelectedClassId(classesData[0].id); // Select first class by default
+        setNewStudent(prev => ({ ...prev, classId: classesData[0].id }));
+      }
+    }, (error) => {
+      console.error("Error fetching classes for student management:", error);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลห้องเรียน: " + error.message, true);
+    });
+    return () => unsubscribe();
+  }, [db, userId, selectedClassId]);
+
+  // Fetch students based on selected class
+  useEffect(() => {
+    if (!db || !userId || !selectedClassId) {
+      setStudents([]); // Clear students if no class is selected
+      return;
+    }
+
+    // Order by studentNumber first, then studentId for consistency
+    const q = query(studentsCollectionRef, where("classId", "==", selectedClassId));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const studentsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Sort by studentNumber (numeric if possible, fallback to string)
+      setStudents(studentsData.sort((a, b) => {
+        const numA = parseInt(a.studentNumber, 10);
+        const numB = parseInt(b.studentNumber, 10);
+        if (!isNaN(numA) && !isNaN(numB)) {
+          return numA - numB;
+        }
+        return (a.studentNumber || '').localeCompare(b.studentNumber || '');
+      }));
+    }, (error) => {
+      console.error("Error fetching students:", error);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลนักเรียน: " + error.message, true);
+    });
+
+    return () => unsubscribe();
+  }, [db, userId, selectedClassId]);
+
+  const handleNewStudentChange = (e) => {
+    const { name, value } = e.target;
+    setNewStudent(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleAddStudent = async (e) => {
+    e.preventDefault();
+    if (!newStudent.studentId.trim() || !newStudent.name.trim() || !newStudent.classId || !newStudent.studentNumber.trim()) {
+      showTemporaryMessage("โปรดกรอกข้อมูลนักเรียนให้ครบถ้วน (เลขประจำตัว, เลขที่นักเรียน, ชื่อ-นามสกุล, ห้องเรียน)", true);
+      return;
+    }
+
+    try {
+      await addDoc(studentsCollectionRef, {
+        ...newStudent,
+        photoUrl: newStudent.photoUrl || `https://placehold.co/100x100/A7D397/FFFFFF?text=${newStudent.name.split(' ')[0]}`, // Placeholder if no photo
+        createdAt: new Date(),
+      });
+      setNewStudent({
+        studentId: '',
+        studentNumber: '', // Reset new field
+        name: '',
+        notes: '',
+        photoUrl: '',
+        classId: selectedClassId, // Keep selected class
+      });
+      showTemporaryMessage("เพิ่มนักเรียนเรียบร้อย");
+    } catch (e) {
+      console.error("Error adding student:", e);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการเพิ่มนักเรียน: " + e.message, true);
+    }
+  };
+
+  const handleDeleteStudent = (studentDocId, studentName) => {
+    showConfirmationModal(`คุณต้องการลบนักเรียน "${studentName}" ใช่หรือไม่?`, async () => {
+      try {
+        await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/students`, studentDocId));
+        showTemporaryMessage("ลบนักเรียนเรียบร้อย");
+      } catch (e) {
+        console.error("Error deleting student:", e);
+        showTemporaryMessage("เกิดข้อผิดพลาดในการลบนักเรียน: " + e.message, true);
+      }
+    });
+  };
+
+  return (
+    <div className="bg-white p-6 rounded-xl shadow-xl max-w-5xl mx-auto border-t-4 border-blue-500">
+      <h2 className="text-3xl font-bold text-blue-700 mb-6 text-center">จัดการรายชื่อนักเรียน</h2>
+
+      <form onSubmit={handleAddStudent} className="mb-8 p-4 bg-blue-50 rounded-lg shadow-inner">
+        <h3 className="text-xl font-semibold text-blue-800 mb-4">เพิ่มนักเรียนใหม่</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label htmlFor="studentId" className="block text-gray-700 text-sm font-semibold mb-2">เลขประจำตัว</label>
+            <input
+              type="text"
+              id="studentId"
+              name="studentId"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500"
+              value={newStudent.studentId}
+              onChange={handleNewStudentChange}
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="studentNumber" className="block text-gray-700 text-sm font-semibold mb-2">เลขที่นักเรียน</label> {/* NEW FIELD */}
+            <input
+              type="text"
+              id="studentNumber"
+              name="studentNumber"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500"
+              value={newStudent.studentNumber}
+              onChange={handleNewStudentChange}
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="name" className="block text-gray-700 text-sm font-semibold mb-2">ชื่อ-นามสกุล</label>
+            <input
+              type="text"
+              id="name"
+              name="name"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500"
+              value={newStudent.name}
+              onChange={handleNewStudentChange}
+              required
+            />
+          </div>
+          <div className="md:col-span-2">
+            <label htmlFor="notes" className="block text-gray-700 text-sm font-semibold mb-2">หมายเหตุ</label>
+            <textarea
+              id="notes"
+              name="notes"
+              rows="2"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500"
+              value={newStudent.notes}
+              onChange={handleNewStudentChange}
+            ></textarea>
+          </div>
+          <div>
+            <label htmlFor="photoUrl" className="block text-gray-700 text-sm font-semibold mb-2">URL รูปนักเรียน (ไม่บังคับ)</label>
+            <input
+              type="text"
+              id="photoUrl"
+              name="photoUrl"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500"
+              value={newStudent.photoUrl}
+              onChange={handleNewStudentChange}
+              placeholder="เช่น https://example.com/student.jpg"
+            />
+          </div>
+          <div>
+            <label htmlFor="classSelect" className="block text-gray-700 text-sm font-semibold mb-2">เลือกห้องเรียน</label>
+            <select
+              id="classSelect"
+              name="classId"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+              value={newStudent.classId}
+              onChange={handleNewStudentChange}
+              required
+            >
+              <option value="">-- เลือกห้องเรียน --</option>
+              {classes.map(cls => (
+                <option key={cls.id} value={cls.id}>{cls.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <button
+          type="submit"
+          className="w-full bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700 transition duration-300 shadow-md"
+        >
+          เพิ่มนักเรียน
+        </button>
+      </form>
+
+      <h3 className="text-xl font-semibold text-blue-800 mb-4">รายชื่อนักเรียนในห้องที่เลือก</h3>
+      <div className="mb-4">
+        <label htmlFor="filterClass" className="block text-gray-700 text-sm font-semibold mb-2">แสดงนักเรียนของห้อง:</label>
+        <select
+          id="filterClass"
+          className="w-full md:w-1/2 px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+          value={selectedClassId}
+          onChange={(e) => setSelectedClassId(e.target.value)}
+        >
+          <option value="">-- เลือกห้องเรียนเพื่อแสดงนักเรียน --</option>
+          {classes.map(cls => (
+            <option key={cls.id} value={cls.id}>{cls.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {selectedClassId && students.length === 0 ? (
+        <p className="text-gray-600 text-center py-4">ยังไม่มีนักเรียนในห้องนี้ กรุณาเพิ่มนักเรียน</p>
+      ) : !selectedClassId ? (
+        <p className="text-gray-600 text-center py-4">โปรดเลือกห้องเรียนเพื่อแสดงรายชื่อนักเรียน</p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
+          <table className="min-w-full bg-white">
+            <thead className="bg-blue-100 border-b border-blue-200">
+              <tr>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">รูป</th>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">เลขที่นักเรียน</th> {/* NEW COLUMN */}
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">เลขประจำตัว</th>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">ชื่อ-นามสกุล</th>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">หมายเหตุ</th>
+                <th className="py-3 px-4 text-center text-sm font-semibold text-blue-700 uppercase tracking-wider">การดำเนินการ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {students.map((student) => (
+                <tr key={student.id} className="border-b border-gray-100 hover:bg-yellow-50">
+                  <td className="py-2 px-4">
+                    <img
+                      src={student.photoUrl}
+                      alt={student.name}
+                      className="w-10 h-10 rounded-full object-cover"
+                      onError={(e) => { e.target.onerror = null; e.target.src = `https://placehold.co/100x100/A7D397/FFFFFF?text=${student.name.split(' ')[0]}`; }}
+                    />
+                  </td>
+                  <td className="py-3 px-4 text-gray-800">{student.studentNumber}</td> {/* DISPLAY NEW FIELD */}
+                  <td className="py-3 px-4 text-gray-800">{student.studentId}</td>
+                  <td className="py-3 px-4 text-gray-800">{student.name}</td>
+                  <td className="py-3 px-4 text-gray-800 max-w-xs overflow-hidden text-ellipsis whitespace-nowrap">{student.notes}</td>
+                  <td className="py-3 px-4 text-center">
+                    <button
+                      onClick={() => handleDeleteStudent(student.id, student.name)}
+                      className="bg-red-500 text-white px-3 py-1 rounded-lg text-sm hover:bg-red-600 transition duration-300 shadow-sm"
+                    >
+                      ลบ
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Attendance Component
+const Attendance = ({ db, userId, showTemporaryMessage, showConfirmationModal }) => {
+  const [classes, setClasses] = useState([]);
+  const [selectedClassId, setSelectedClassId] = useState('');
+  const [students, setStudents] = useState([]);
+  const [attendanceRecords, setAttendanceRecords] = useState({}); // { studentId: { status: 'มาเรียน', notes: '' } }
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]); // YYYY-MM-DD
+  const [selectedSemester, setSelectedSemester] = useState('1');
+  const [selectedAcademicYear, setSelectedAcademicYear] = useState(new Date().getFullYear().toString());
+
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  const studentsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/students`);
+  const classesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/classes`);
+  const attendanceCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/attendance`);
+
+  const statusColors = {
+    'มาเรียน': 'bg-green-200',
+    'ขาด': 'bg-orange-200',
+    'ลา': 'bg-yellow-200',
+    'ป่วย': 'bg-red-200',
+    'มาสาย': 'bg-pink-200',
+    '': 'bg-gray-100', // Default for not yet checked
+  };
+
+  const statusButtonColors = {
+    'มาเรียน': 'bg-green-500 hover:bg-green-600',
+    'ขาด': 'bg-orange-500 hover:bg-orange-600',
+    'ลา': 'bg-yellow-500 hover:bg-yellow-600',
+    'ป่วย': 'bg-red-500 hover:bg-red-600',
+    'มาสาย': 'bg-pink-500 hover:bg-pink-600',
+  };
+
+  // Fetch classes
+  useEffect(() => {
+    if (!db || !userId) return;
+    const q = query(classesCollectionRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const classesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setClasses(classesData.sort((a, b) => a.name.localeCompare(b.name)));
+      if (classesData.length > 0 && !selectedClassId) {
+        setSelectedClassId(classesData[0].id);
+      }
+    }, (error) => {
+      console.error("Error fetching classes for attendance:", error);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลห้องเรียน: " + error.message, true);
+    });
+    return () => unsubscribe();
+  }, [db, userId, selectedClassId]);
+
+  // Fetch students and attendance records for the selected class and date
+  useEffect(() => {
+    if (!db || !userId || !selectedClassId || !selectedDate) {
+      setStudents([]);
+      setAttendanceRecords({});
+      return;
+    }
+
+    const fetchStudentsAndAttendance = async () => {
+      try {
+        // Fetch students for the selected class
+        const studentsQuery = query(studentsCollectionRef, where("classId", "==", selectedClassId));
+        const studentsSnapshot = await getDocs(studentsQuery);
+        const studentsData = studentsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // Sort by studentNumber first, then studentId for consistency
+        setStudents(studentsData.sort((a, b) => {
+          const numA = parseInt(a.studentNumber, 10);
+          const numB = parseInt(b.studentNumber, 10);
+          if (!isNaN(numA) && !isNaN(numB)) {
+            return numA - numB;
+          }
+          return (a.studentNumber || '').localeCompare(b.studentNumber || '');
+        }));
+
+        // Fetch attendance records for the selected class and date
+        const attendanceQuery = query(
+          attendanceCollectionRef,
+          where("classId", "==", selectedClassId),
+          where("date", "==", selectedDate),
+          where("academicYear", "==", selectedAcademicYear),
+          where("semester", "==", selectedSemester)
+        );
+        const attendanceSnapshot = await getDocs(attendanceQuery);
+        const records = {};
+        attendanceSnapshot.docs.forEach(doc => {
+          const data = doc.data();
+          records[data.studentFirebaseId] = { status: data.status, notes: data.notes || '', docId: doc.id };
+        });
+        setAttendanceRecords(records);
+      } catch (e) {
+        console.error("Error fetching students or attendance:", e);
+        showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลนักเรียนหรือการเช็คชื่อ: " + e.message, true);
+      }
+    };
+
+    fetchStudentsAndAttendance();
+  }, [db, userId, selectedClassId, selectedDate, selectedSemester, selectedAcademicYear]);
+
+  const handleStatusChange = async (studentFirebaseId, studentId, studentName, status) => {
+    const currentRecord = attendanceRecords[studentFirebaseId] || {};
+    const newNotes = currentRecord.notes || ''; // Keep existing notes if status changes
+
+    const recordData = {
+      studentFirebaseId: studentFirebaseId, // Firebase document ID of the student
+      studentId: studentId, // Student's actual ID (e.g., 001)
+      studentName: studentName,
+      classId: selectedClassId,
+      date: selectedDate,
+      semester: selectedSemester,
+      academicYear: selectedAcademicYear,
+      status: status,
+      notes: newNotes,
+      timestamp: new Date().toISOString(), // Actual time of status change
+    };
+
+    try {
+      if (currentRecord.docId) {
+        // Update existing record
+        await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/attendance`, currentRecord.docId), recordData);
+      } else {
+        // Add new record
+        const docRef = await addDoc(attendanceCollectionRef, recordData);
+        recordData.docId = docRef.id; // Store the new doc ID
+      }
+
+      setAttendanceRecords(prev => ({
+        ...prev,
+        [studentFirebaseId]: { status: status, notes: newNotes, docId: recordData.docId }
+      }));
+      showTemporaryMessage("บันทึกข้อมูลเรียบร้อย");
+    } catch (e) {
+      console.error("Error updating attendance:", e);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการบันทึกการเช็คชื่อ: " + e.message, true);
+    }
+  };
+
+  const handleNotesChange = async (studentFirebaseId, studentId, studentName, notes) => {
+    const currentRecord = attendanceRecords[studentFirebaseId] || {};
+    const currentStatus = currentRecord.status || '';
+
+    const recordData = {
+      studentFirebaseId: studentFirebaseId,
+      studentId: studentId,
+      studentName: studentName,
+      classId: selectedClassId,
+      date: selectedDate,
+      semester: selectedSemester,
+      academicYear: selectedAcademicYear,
+      status: currentStatus, // Keep existing status
+      notes: notes,
+      timestamp: new Date().toISOString(),
+    };
+
+    try {
+      if (currentRecord.docId) {
+        // Update existing record
+        await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/attendance`, currentRecord.docId), recordData);
+      } else {
+        // Add new record (if notes added before status)
+        const docRef = await addDoc(attendanceCollectionRef, recordData);
+        recordData.docId = docRef.id;
+      }
+
+      setAttendanceRecords(prev => ({
+        ...prev,
+        [studentFirebaseId]: { status: currentStatus, notes: notes, docId: recordData.docId }
+      }));
+      showTemporaryMessage("บันทึกหมายเหตุเรียบร้อย");
+    } catch (e) {
+      console.error("Error updating notes:", e);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการบันทึกหมายเหตุ: " + e.message, true);
+    }
+  };
+
+  const academicYears = Array.from({ length: 5 }, (_, i) => (new Date().getFullYear() - 2 + i).toString());
+
+  return (
+    <div className="bg-white p-6 rounded-xl shadow-xl max-w-6xl mx-auto border-t-4 border-blue-500">
+      <h2 className="text-3xl font-bold text-blue-700 mb-6 text-center">เช็คชื่อนักเรียน</h2>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 p-4 bg-blue-50 rounded-lg shadow-inner">
+        <div>
+          <label htmlFor="classSelect" className="block text-gray-700 text-sm font-semibold mb-2">เลือกห้องเรียน</label>
+          <select
+            id="classSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedClassId}
+            onChange={(e) => setSelectedClassId(e.target.value)}
+          >
+            <option value="">-- เลือกห้องเรียน --</option>
+            {classes.map(cls => (
+              <option key={cls.id} value={cls.id}>{cls.name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="dateSelect" className="block text-gray-700 text-sm font-semibold mb-2">เลือกวันเช็คชื่อ</label>
+          <input
+            type="date"
+            id="dateSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor="semesterSelect" className="block text-gray-700 text-sm font-semibold mb-2">ภาคเรียน</label>
+          <select
+            id="semesterSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedSemester}
+            onChange={(e) => setSelectedSemester(e.target.value)}
+          >
+            <option value="1">ภาคเรียนที่ 1</option>
+            <option value="2">ภาคเรียนที่ 2</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="academicYearSelect" className="block text-gray-700 text-sm font-semibold mb-2">ปีการศึกษา</label>
+          <select
+            id="academicYearSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedAcademicYear}
+            onChange={(e) => setSelectedAcademicYear(e.target.value)}
+          >
+            {academicYears.map(year => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {!selectedClassId ? (
+        <p className="text-gray-600 text-center py-8">โปรดเลือกห้องเรียนเพื่อเริ่มเช็คชื่อ</p>
+      ) : students.length === 0 ? (
+        <p className="text-gray-600 text-center py-8">ยังไม่มีนักเรียนในห้องนี้ กรุณาเพิ่มนักเรียนในหน้าจัดการนักเรียน</p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
+          <table className="min-w-full bg-white">
+            <thead className="bg-blue-100 border-b border-blue-200">
+              <tr>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">เลขที่นักเรียน</th> {/* NEW COLUMN */}
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">เลขประจำตัว</th>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">ชื่อ-นามสกุล</th>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">สถานะ</th>
+                <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">หมายเหตุพฤติกรรม</th>
+              </tr>
+            </thead>
+            <tbody>
+              {students.map((student) => {
+                const record = attendanceRecords[student.id] || { status: '', notes: '' };
+                return (
+                  <tr key={student.id} className={`border-b border-gray-100 ${statusColors[record.status] || 'bg-white'} hover:bg-opacity-80 transition-colors duration-200`}>
+                    <td className="py-3 px-4 text-gray-800">{student.studentNumber}</td> {/* DISPLAY NEW FIELD */}
+                    <td className="py-3 px-4 text-gray-800">{student.studentId}</td>
+                    <td className="py-3 px-4 text-gray-800">{student.name}</td>
+                    <td className="py-3 px-4">
+                      <div className="flex flex-wrap gap-2">
+                        {['มาเรียน', 'ขาด', 'ลา', 'ป่วย', 'มาสาย'].map(status => (
+                          <button
+                            key={status}
+                            onClick={() => handleStatusChange(student.id, student.studentId, student.name, status)}
+                            className={`px-3 py-1 rounded-lg text-sm text-white font-semibold shadow-sm
+                              ${statusButtonColors[status]}
+                              ${record.status === status ? 'ring-2 ring-offset-1 ring-blue-400' : ''}
+                              transition duration-200`}
+                          >
+                            {status}
+                          </button>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <textarea
+                        rows="1"
+                        className="w-full px-2 py-1 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 text-sm"
+                        value={record.notes}
+                        onChange={(e) => handleNotesChange(student.id, student.studentId, student.name, e.target.value)}
+                        placeholder="บันทึกพฤติกรรมเฉพาะตัว"
+                      ></textarea>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Daily Summary Component
+const DailySummary = ({ db, userId, showTemporaryMessage }) => {
+  const [classes, setClasses] = useState([]);
+  const [selectedClassId, setSelectedClassId] = useState('');
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]); // YYYY-MM-DD
+  const [selectedSemester, setSelectedSemester] = useState('1');
+  const [selectedAcademicYear, setSelectedAcademicYear] = useState(new Date().getFullYear().toString());
+  const [dailySummary, setDailySummary] = useState({}); // { status: [student1, student2], total: X, percentage: Y }
+  const [totalStudentsInClass, setTotalStudentsInClass] = useState(0);
+
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  const classesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/classes`);
+  const attendanceCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/attendance`);
+  const studentsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/students`);
+
+  const statusColors = {
+    'มาเรียน': 'bg-green-100 border-green-300 text-green-800',
+    'ขาด': 'bg-orange-100 border-orange-300 text-orange-800',
+    'ลา': 'bg-yellow-100 border-yellow-300 text-yellow-800',
+    'ป่วย': 'bg-red-100 border-red-300 text-red-800',
+    'มาสาย': 'bg-pink-100 border-pink-300 text-pink-800',
+  };
+
+  // Fetch classes
+  useEffect(() => {
+    if (!db || !userId) return;
+    const q = query(classesCollectionRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const classesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setClasses(classesData.sort((a, b) => a.name.localeCompare(b.name)));
+      if (classesData.length > 0 && !selectedClassId) {
+        setSelectedClassId(classesData[0].id);
+      }
+    }, (error) => {
+      console.error("Error fetching classes for daily summary:", error);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลห้องเรียน: " + error.message, true);
+    });
+    return () => unsubscribe();
+  }, [db, userId, selectedClassId]);
+
+  // Fetch daily summary data
+  useEffect(() => {
+    if (!db || !userId || !selectedClassId || !selectedDate) {
+      setDailySummary({});
+      setTotalStudentsInClass(0);
+      return;
+    }
+
+    const fetchSummary = async () => {
+      try {
+        // Get total students in the selected class
+        const studentsQuery = query(studentsCollectionRef, where("classId", "==", selectedClassId));
+        const studentsSnapshot = await getDocs(studentsQuery);
+        const totalStudents = studentsSnapshot.size;
+        setTotalStudentsInClass(totalStudents);
+
+        // Get attendance records for the selected class and date
+        const attendanceQuery = query(
+          attendanceCollectionRef,
+          where("classId", "==", selectedClassId),
+          where("date", "==", selectedDate),
+          where("academicYear", "==", selectedAcademicYear),
+          where("semester", "==", selectedSemester)
+        );
+
+        const unsubscribe = onSnapshot(attendanceQuery, (snapshot) => {
+          const summary = {
+            'มาเรียน': { students: [], count: 0 },
+            'ขาด': { students: [], count: 0 },
+            'ลา': { students: [], count: 0 },
+            'ป่วย': { students: [], count: 0 },
+            'มาสาย': { students: [], count: 0 },
+            'ยังไม่เช็คชื่อ': { students: [], count: 0 }, // Students not yet marked
+          };
+
+          const checkedStudentIds = new Set();
+          snapshot.docs.forEach(doc => {
+            const data = doc.data();
+            if (summary[data.status]) {
+              summary[data.status].students.push({ id: data.studentId, name: data.studentName, notes: data.notes });
+              summary[data.status].count++;
+              checkedStudentIds.add(data.studentFirebaseId);
+            }
+          });
+
+          // Identify students not yet checked (assuming all students in class should be checked)
+          const studentsNotChecked = studentsSnapshot.docs
+            .filter(studentDoc => !checkedStudentIds.has(studentDoc.id))
+            .map(studentDoc => ({ id: studentDoc.data().studentId, name: studentDoc.data().name }));
+
+          summary['ยังไม่เช็คชื่อ'].students = studentsNotChecked;
+          summary['ยังไม่เช็คชื่อ'].count = studentsNotChecked.length;
+
+          // Calculate percentages
+          Object.keys(summary).forEach(status => {
+            summary[status].percentage = totalStudents > 0 ? ((summary[status].count / totalStudents) * 100).toFixed(2) : 0;
+          });
+
+          setDailySummary(summary);
+        }, (error) => {
+          console.error("Error fetching daily attendance summary:", error);
+          showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลสรุปรายวัน: " + error.message, true);
+        });
+
+        return () => unsubscribe(); // Cleanup snapshot listener
+      } catch (e) {
+        console.error("Error fetching daily summary data:", e);
+        showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลสรุปรายวัน: " + e.message, true);
+      }
+    };
+
+    fetchSummary();
+  }, [db, userId, selectedClassId, selectedDate, selectedSemester, selectedAcademicYear]);
+
+  const academicYears = Array.from({ length: 5 }, (_, i) => (new Date().getFullYear() - 2 + i).toString());
+
+  return (
+    <div className="bg-white p-6 rounded-xl shadow-xl max-w-6xl mx-auto border-t-4 border-blue-500">
+      <h2 className="text-3xl font-bold text-blue-700 mb-6 text-center">สรุปการเช็คชื่อรายวัน</h2>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 p-4 bg-blue-50 rounded-lg shadow-inner">
+        <div>
+          <label htmlFor="classSelect" className="block text-gray-700 text-sm font-semibold mb-2">เลือกห้องเรียน</label>
+          <select
+            id="classSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedClassId}
+            onChange={(e) => setSelectedClassId(e.target.value)}
+          >
+            <option value="">-- เลือกห้องเรียน --</option>
+            {classes.map(cls => (
+              <option key={cls.id} value={cls.id}>{cls.name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="dateSelect" className="block text-gray-700 text-sm font-semibold mb-2">เลือกวันเช็คชื่อ</label>
+          <input
+            type="date"
+            id="dateSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor="semesterSelect" className="block text-gray-700 text-sm font-semibold mb-2">ภาคเรียน</label>
+          <select
+            id="semesterSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedSemester}
+            onChange={(e) => setSelectedSemester(e.target.value)}
+          >
+            <option value="1">ภาคเรียนที่ 1</option>
+            <option value="2">ภาคเรียนที่ 2</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="academicYearSelect" className="block text-gray-700 text-sm font-semibold mb-2">ปีการศึกษา</label>
+          <select
+            id="academicYearSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedAcademicYear}
+            onChange={(e) => setSelectedAcademicYear(e.target.value)}
+          >
+            {academicYears.map(year => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {!selectedClassId ? (
+        <p className="text-gray-600 text-center py-8">โปรดเลือกห้องเรียนเพื่อดูสรุปรายวัน</p>
+      ) : (
+        <div>
+          <div className="mb-6 text-lg font-semibold text-gray-700">
+            จำนวนนักเรียนทั้งหมดในห้อง: {totalStudentsInClass} คน
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {Object.keys(dailySummary).map(status => (
+              <div key={status} className={`p-5 rounded-lg shadow-md border ${statusColors[status] || 'bg-gray-100 border-gray-300 text-gray-800'}`}>
+                <h3 className="text-xl font-bold mb-3">{status} ({dailySummary[status].count} คน)</h3>
+                <p className="text-sm mb-4">
+                  คิดเป็น: <span className="font-bold">{dailySummary[status].percentage}%</span>
+                </p>
+                {dailySummary[status].students.length > 0 ? (
+                  <ul className="list-disc list-inside space-y-1 text-sm">
+                    {dailySummary[status].students.map((student, index) => (
+                      <li key={index}>
+                        {student.name} ({student.id})
+                        {student.notes && <span className="text-gray-600 ml-2 text-xs italic">({student.notes})</span>}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-gray-600 italic">ไม่มีนักเรียนในสถานะนี้</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Term Summary Component
+const TermSummary = ({ db, userId, showTemporaryMessage }) => {
+  const [classes, setClasses] = useState([]);
+  const [selectedClassId, setSelectedClassId] = useState('');
+  const [selectedSemester, setSelectedSemester] = useState('1');
+  const [selectedAcademicYear, setSelectedAcademicYear] = useState(new Date().getFullYear().toString());
+  const [termSummaryData, setTermSummaryData] = useState([]); // Array of { studentName, studentId, มาเรียน, ขาด, ลา, ป่วย, มาสาย, totalDaysChecked }
+  const [chartData, setChartData] = useState([]);
+
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  const classesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/classes`);
+  const attendanceCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/attendance`);
+
+  // Fetch classes
+  useEffect(() => {
+    if (!db || !userId) return;
+    const q = query(classesCollectionRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const classesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setClasses(classesData.sort((a, b) => a.name.localeCompare(b.name)));
+      if (classesData.length > 0 && !selectedClassId) {
+        setSelectedClassId(classesData[0].id);
+      }
+    }, (error) => {
+      console.error("Error fetching classes for term summary:", error);
+      showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลห้องเรียน: " + error.message, true);
+    });
+    return () => unsubscribe();
+  }, [db, userId, selectedClassId]);
+
+  // Fetch term summary data
+  useEffect(() => {
+    if (!db || !userId || !selectedClassId) {
+      setTermSummaryData([]);
+      setChartData([]);
+      return;
+    }
+
+    const fetchTermSummary = async () => {
+      try {
+        const q = query(
+          attendanceCollectionRef,
+          where("classId", "==", selectedClassId),
+          where("academicYear", "==", selectedAcademicYear),
+          where("semester", "==", selectedSemester)
+        );
+
+        const querySnapshot = await getDocs(q);
+        const rawAttendance = querySnapshot.docs.map(doc => doc.data());
+
+        const summaryMap = {}; // { studentFirebaseId: { มาเรียน: X, ขาด: Y, ... } }
+        const uniqueDates = new Set();
+
+        rawAttendance.forEach(record => {
+          if (!summaryMap[record.studentFirebaseId]) {
+            summaryMap[record.studentFirebaseId] = {
+              studentName: record.studentName,
+              studentId: record.studentId,
+              studentNumber: record.studentNumber, // Include studentNumber
+              'มาเรียน': 0,
+              'ขาด': 0,
+              'ลา': 0,
+              'ป่วย': 0,
+              'มาสาย': 0,
+              totalDaysChecked: 0, // To count unique days checked for this student
+              checkedDates: new Set(), // To track unique dates for this student
+            };
+          }
+          summaryMap[record.studentFirebaseId][record.status]++;
+          summaryMap[record.studentFirebaseId].checkedDates.add(record.date);
+          uniqueDates.add(record.date); // Track all unique dates in the term
+        });
+
+        // Convert checkedDates Set to count for totalDaysChecked
+        Object.values(summaryMap).forEach(studentSummary => {
+          studentSummary.totalDaysChecked = studentSummary.checkedDates.size;
+          delete studentSummary.checkedDates; // Clean up
+        });
+
+        // Sort by studentNumber for display
+        const sortedSummary = Object.values(summaryMap).sort((a, b) => {
+          const numA = parseInt(a.studentNumber, 10);
+          const numB = parseInt(b.studentNumber, 10);
+          if (!isNaN(numA) && !isNaN(numB)) {
+            return numA - numB;
+          }
+          return (a.studentNumber || '').localeCompare(b.studentNumber || '');
+        });
+        setTermSummaryData(sortedSummary);
+
+        // Prepare data for chart (e.g., top 5 students with most absences)
+        const sortedForChart = [...sortedSummary].sort((a, b) => (b['ขาด'] + b['ลา'] + b['ป่วย'] + b['มาสาย']) - (a['ขาด'] + a['ลา'] + a['ป่วย'] + a['มาสาย']));
+        const topStudentsChartData = sortedForChart.slice(0, 5).map(s => ({
+          name: s.studentName,
+          ขาด: s['ขาด'],
+          ลา: s['ลา'],
+          ป่วย: s['ป่วย'],
+          มาสาย: s['มาสาย'],
+        }));
+        setChartData(topStudentsChartData);
+
+      } catch (e) {
+        console.error("Error fetching term summary:", e);
+        showTemporaryMessage("เกิดข้อผิดพลาดในการดึงข้อมูลสรุปปลายเทอม: " + e.message, true);
+      }
+    };
+
+    fetchTermSummary();
+  }, [db, userId, selectedClassId, selectedSemester, selectedAcademicYear]);
+
+  const academicYears = Array.from({ length: 5 }, (_, i) => (new Date().getFullYear() - 2 + i).toString());
+
+  const exportToExcel = () => {
+    if (termSummaryData.length === 0) {
+      showTemporaryMessage("ไม่มีข้อมูลสำหรับส่งออก", true);
+      return;
+    }
+
+    // Ensure XLSX is available globally
+    if (typeof XLSX === 'undefined') {
+      showTemporaryMessage("ไม่สามารถส่งออก Excel ได้: ไลบรารี XLSX ไม่พร้อมใช้งาน", true);
+      console.error("XLSX library is not loaded.");
+      return;
+    }
+
+    const dataToExport = termSummaryData.map(student => ({
+      'เลขที่นักเรียน': student.studentNumber, // Include in export
+      'เลขประจำตัว': student.studentId,
+      'ชื่อ-นามสกุล': student.studentName,
+      'มาเรียน': student['มาเรียน'],
+      'ขาด': student['ขาด'],
+      'ลา': student['ลา'],
+      'ป่วย': student['ป่วย'],
+      'มาสาย': student['มาสาย'],
+      'จำนวนวันที่เช็คชื่อ': student.totalDaysChecked,
+      'เปอร์เซ็นต์มาเรียน': student.totalDaysChecked > 0 ? ((student['มาเรียน'] / student.totalDaysChecked) * 100).toFixed(2) : '0.00',
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "สรุปปลายเทอม");
+
+    const fileName = `สรุปปลายเทอม_${classes.find(c => c.id === selectedClassId)?.name}_ปี${selectedAcademicYear}_ภาค${selectedSemester}.xlsx`;
+    XLSX.writeFile(workbook, fileName);
+    showTemporaryMessage("ส่งออกไฟล์ Excel เรียบร้อย");
+  };
+
+  return (
+    <div className="bg-white p-6 rounded-xl shadow-xl max-w-6xl mx-auto border-t-4 border-blue-500">
+      <h2 className="text-3xl font-bold text-blue-700 mb-6 text-center">สรุปผลการมาเรียนปลายเทอม</h2>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 p-4 bg-blue-50 rounded-lg shadow-inner">
+        <div>
+          <label htmlFor="classSelect" className="block text-gray-700 text-sm font-semibold mb-2">เลือกห้องเรียน</label>
+          <select
+            id="classSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedClassId}
+            onChange={(e) => setSelectedClassId(e.target.value)}
+          >
+            <option value="">-- เลือกห้องเรียน --</option>
+            {classes.map(cls => (
+              <option key={cls.id} value={cls.id}>{cls.name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="semesterSelect" className="block text-gray-700 text-sm font-semibold mb-2">ภาคเรียน</label>
+          <select
+            id="semesterSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedSemester}
+            onChange={(e) => setSelectedSemester(e.target.value)}
+          >
+            <option value="1">ภาคเรียนที่ 1</option>
+            <option value="2">ภาคเรียนที่ 2</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="academicYearSelect" className="block text-gray-700 text-sm font-semibold mb-2">ปีการศึกษา</label>
+          <select
+            id="academicYearSelect"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-yellow-500 focus:border-yellow-500 bg-white"
+            value={selectedAcademicYear}
+            onChange={(e) => setSelectedAcademicYear(e.target.value)}
+          >
+            {academicYears.map(year => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {!selectedClassId ? (
+        <p className="text-gray-600 text-center py-8">โปรดเลือกห้องเรียนเพื่อดูสรุปปลายเทอม</p>
+      ) : termSummaryData.length === 0 ? (
+        <p className="text-gray-600 text-center py-8">ยังไม่มีข้อมูลการเช็คชื่อสำหรับภาคเรียนและปีการศึกษานี้ในห้องที่เลือก</p>
+      ) : (
+        <>
+          <div className="mb-6 flex justify-end">
+            <button
+              onClick={exportToExcel}
+              className="bg-green-600 text-white px-5 py-2 rounded-lg font-semibold hover:bg-green-700 transition duration-300 shadow-md"
+            >
+              ส่งออกเป็น Excel
+            </button>
+          </div>
+
+          <h3 className="text-xl font-semibold text-blue-800 mb-4">ตารางสรุปผลการมาเรียน</h3>
+          <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
+            <table className="min-w-full bg-white">
+              <thead className="bg-blue-100 border-b border-blue-200">
+                <tr>
+                  <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">เลขที่นักเรียน</th> {/* NEW COLUMN */}
+                  <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">เลขประจำตัว</th>
+                  <th className="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">ชื่อ-นามสกุล</th>
+                  <th className="py-3 px-4 text-center text-sm font-semibold text-blue-700 uppercase tracking-wider">มาเรียน</th>
+                  <th className="py-3 px-4 text-center text-sm font-semibold text-blue-700 uppercase tracking-wider">ขาด</th>
+                  <th className="py-3 px-4 text-center text-sm font-semibold text-blue-700 uppercase tracking-wider">ลา</th>
+                  <th className="py-3 px-4 text-center text-sm font-semibold text-blue-700 uppercase tracking-wider">ป่วย</th>
+                  <th className="py-3 px-4 text-center text-sm font-semibold text-blue-700 uppercase tracking-wider">มาสาย</th>
+                  <th className="py-3 px-4 text-center text-sm font-semibold text-blue-700 uppercase tracking-wider">จำนวนวันที่เช็คชื่อ</th>
+                  <th className="py-3 px-4 text-center text-sm font-semibold text-blue-700 uppercase tracking-wider">เปอร์เซ็นต์มาเรียน</th>
+                </tr>
+              </thead>
+              <tbody>
+                {termSummaryData.map((student, index) => (
+                  <tr key={index} className="border-b border-gray-100 hover:bg-yellow-50">
+                    <td className="py-3 px-4 text-gray-800">{student.studentNumber}</td> {/* DISPLAY NEW FIELD */}
+                    <td className="py-3 px-4 text-gray-800">{student.studentId}</td>
+                    <td className="py-3 px-4 text-gray-800">{student.studentName}</td>
+                    <td className="py-3 px-4 text-center text-green-700 font-semibold">{student['มาเรียน']}</td>
+                    <td className="py-3 px-4 text-center text-orange-700 font-semibold">{student['ขาด']}</td>
+                    <td className="py-3 px-4 text-center text-yellow-700 font-semibold">{student['ลา']}</td>
+                    <td className="py-3 px-4 text-center text-red-700 font-semibold">{student['ป่วย']}</td>
+                    <td className="py-3 px-4 text-center text-pink-700 font-semibold">{student['มาสาย']}</td>
+                    <td className="py-3 px-4 text-center text-blue-700 font-semibold">{student.totalDaysChecked}</td>
+                    <td className="py-3 px-4 text-center font-semibold">
+                      {student.totalDaysChecked > 0 ? ((student['มาเรียน'] / student.totalDaysChecked) * 100).toFixed(2) : '0.00'}%
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h3 className="text-xl font-semibold text-blue-800 mb-4">กราฟสรุปการมาเรียน (5 อันดับแรกที่มีการขาด/ลา/ป่วย/มาสาย มากที่สุด)</h3>
+          {chartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={400}>
+              <BarChart
+                data={chartData}
+                margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                <XAxis dataKey="name" angle={-15} textAnchor="end" height={60} interval={0} />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="ขาด" stackId="a" fill="#F97316" name="ขาด" radius={[5, 5, 0, 0]} />
+                <Bar dataKey="ลา" stackId="a" fill="#FACC15" name="ลา" radius={[5, 5, 0, 0]} />
+                <Bar dataKey="ป่วย" stackId="a" fill="#EF4444" name="ป่วย" radius={[5, 5, 0, 0]} />
+                <Bar dataKey="มาสาย" stackId="a" fill="#EC4899" name="มาสาย" radius={[5, 5, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-gray-600 text-center py-4">ไม่มีข้อมูลเพียงพอสำหรับสร้างกราฟ</p>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+// Tailwind CSS styles (for nav-button)
+// These styles are applied directly to the button elements in JSX
+// For global styles, a separate CSS file would be used in a real project.
+// However, for this environment, inline styling or direct class application is preferred.
+
+// Add global styles for the app
+const styleTag = document.createElement('style');
+styleTag.innerHTML = `
+  body {
+    font-family: 'Inter', sans-serif;
+  }
+  .nav-button {
+    @apply px-4 py-2 rounded-lg font-semibold hover:bg-blue-600 transition duration-300 shadow-sm;
+  }
+  .animate-fade-in-down {
+    animation: fadeInDown 0.5s ease-out forwards;
+  }
+  @keyframes fadeInDown {
+    from {
+      opacity: 0;
+      transform: translate(-50%, -20px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+  }
+`;
+document.head.appendChild(styleTag);
+
+// Load Inter font
+const linkTag = document.createElement('link');
+linkTag.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap';
+linkTag.rel = 'stylesheet';
+document.head.appendChild(linkTag);
+
+// Load Tailwind CSS
+const tailwindScript = document.createElement('script');
+tailwindScript.src = 'https://cdn.tailwindcss.com';
+document.head.appendChild(tailwindScript);
+
+// Load XLSX library from CDN
+const xlsxScript = document.createElement('script');
+xlsxScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+document.head.appendChild(xlsxScript);
+
+
+export default App;
